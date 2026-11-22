@@ -124,9 +124,24 @@ async fn main(_spawner: Spawner) {
         }
     }
 
+    // Frames queued while configure waited (the 500 ms signal settle) would arrive in a burst and inflate the count:
+    // read and discard for 1 s first, then count.
+    let settle_end = Instant::now() + Duration::from_secs(1);
+    loop {
+        let now = Instant::now();
+        if now >= settle_end {
+            break;
+        }
+        if with_timeout(settle_end - now, gnss.read_pvt()).await.is_err() {
+            break;
+        }
+    }
+
     let before = gnss.stats();
     let mut frames = 0u32;
-    let mut last = None;
+    let mut last: Option<sam_m10q::Pvt> = None;
+    // The receiver's own epoch step (iTOW, ms) between consecutive frames must equal the configured rate.
+    let mut bad_steps = 0u32;
     let end = Instant::now() + Duration::from_secs(WINDOW_SECS);
     loop {
         let now = Instant::now();
@@ -136,6 +151,11 @@ async fn main(_spawner: Spawner) {
         match with_timeout(end - now, gnss.read_pvt()).await {
             Ok(Ok(pvt)) => {
                 frames += 1;
+                if let Some(prev) = &last {
+                    if pvt.itow.wrapping_sub(prev.itow) != u32::from(config.meas_rate_ms) {
+                        bad_steps += 1;
+                    }
+                }
                 last = Some(pvt);
             }
             Ok(Err(e)) => {
@@ -155,6 +175,12 @@ async fn main(_spawner: Spawner) {
         (FRAMES_MIN..=FRAMES_MAX).contains(&frames),
         "{=str} NAV-PVT frames in 10 s: {=u32} (expect 48..=52)",
         frames
+    );
+    check!(
+        failures,
+        bad_steps == 0,
+        "{=str} iTOW step between frames = meas rate: {=u32} bad steps",
+        bad_steps
     );
     check!(
         failures,
