@@ -155,9 +155,10 @@ fn valset_default_golden() {
         0x24, 0x00, 0x31, 0x10, 0x01, // QZSS_ENA
         0x12, 0x00, 0x31, 0x10, 0x01, // QZSS_L1CA_ENA
         0x25, 0x00, 0x31, 0x10, 0x00, // GLO_ENA = 0
+        0x18, 0x00, 0x31, 0x10, 0x00, // GLO_L1_ENA = 0 (added with the constellation sets)
     ];
     assert_eq!(set.payload(), expected);
-    assert_eq!(set.pairs(), 19);
+    assert_eq!(set.pairs(), 20);
     assert!(set.pairs() <= config::MAX_PAIRS);
     // Walk the pairs: each value's size follows from the key.
     let mut at = 4;
@@ -167,7 +168,7 @@ fn valset_default_golden() {
         at += 4 + config::key_size(key).unwrap();
         n += 1;
     }
-    assert_eq!((at, n), (expected.len(), 19));
+    assert_eq!((at, n), (expected.len(), 20));
 }
 
 #[test]
@@ -193,10 +194,39 @@ fn valset_limits() {
 }
 
 #[test]
+fn valset_signals_per_set() {
+    use config::Constellations as C;
+    // GPS, GPS_L1CA, GAL, GAL_E1, BDS, BDS_B1, BDS_B1C, QZSS, QZSS_L1CA, GLO, GLO_L1
+    for (set, bits, min) in [
+        (C::GpsGalBdsQzss, [1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0], 125),
+        (C::GpsGal, [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], 100),
+        (C::GpsGalGlo, [1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1], 167),
+    ] {
+        let cfg = Config { constellations: set, ..Config::default() };
+        let payload = cfg.valset().unwrap().payload().to_vec();
+        let keys: [u32; 11] = [
+            0x1031_001f, 0x1031_0001, 0x1031_0021, 0x1031_0007, 0x1031_0022, 0x1031_000d,
+            0x1031_000f, 0x1031_0024, 0x1031_0012, 0x1031_0025, 0x1031_0018,
+        ];
+        let mut tail = Vec::new();
+        for (k, b) in keys.iter().zip(bits) {
+            tail.extend_from_slice(&k.to_le_bytes());
+            tail.push(b);
+        }
+        assert!(payload.ends_with(&tail), "{set:?}");
+        assert_eq!(payload.len(), 106, "{set:?}");
+        assert_eq!(set.min_meas_rate_ms(), min);
+        assert!(cfg.is_valid());
+    }
+    assert_eq!(Config::default().constellations, C::GpsGalBdsQzss);
+}
+
+#[test]
 fn config_validation() {
     assert!(Config::default().is_valid());
+    assert!(Config { meas_rate_ms: 100, ..Config::default() }.is_valid());
     for bad in [
-        Config { meas_rate_ms: 100, ..Config::default() },
+        Config { meas_rate_ms: 150, ..Config::default() },
         Config { nav_rate: 0, ..Config::default() },
         Config { target_baud: 0, ..Config::default() },
         Config { reply_timeout_ms: 0, ..Config::default() },

@@ -67,7 +67,7 @@ use core::task::Poll;
 use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::{Read, Write};
 
-pub use config::{Config, ValSet};
+pub use config::{Config, Constellations, ValSet};
 pub use msg::{Message, Pvt, Version};
 pub use ubx::{Parser, ParserStats};
 

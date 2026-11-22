@@ -19,8 +19,8 @@ pub const DEFAULT_REPLY_TIMEOUT_MS: u32 = 1000;
 pub const DEFAULT_SIGNAL_SETTLE_MS: u32 = 500;
 /// Wait after switching the UART baud rate, ms: the receiver needs about 100 ms (IM, page 22).
 pub const DEFAULT_BAUD_SETTLE_MS: u32 = 100;
-/// Measurement period, ms: 200 (5 Hz). The data sheet (tables 1 and 2) allows 200, 500 and 1000 only
-/// for this constellation set (8 Hz maximum).
+/// Measurement period, ms: 200 (5 Hz), within the 8 Hz maximum of the default constellation set
+/// (data sheet tables 1 and 2).
 pub const DEFAULT_MEAS_RATE_MS: u16 = 200;
 /// Navigation solutions per measurement: 1.
 pub const DEFAULT_NAV_RATE: u16 = 1;
@@ -29,8 +29,9 @@ pub const DEFAULT_DYN_MODEL: u8 = 8;
 /// Static hold threshold, cm/s (CFG-MOT-GNSSSPEED_THRS): 0 is off, the u-blox default (IM, 2.2.5).
 pub const DEFAULT_STATIC_HOLD_THRS: u8 = 0;
 
-/// Measurement periods the receiver accepts here, ms (data sheet tables 1 and 2).
-pub const MEAS_RATES_MS: [u16; 3] = [200, 500, 1000];
+/// Measurement periods the receiver accepts here, ms (data sheet tables 1 and 2); the constellation set limits the fastest one, see
+/// [`Constellations::min_meas_rate_ms`].
+pub const MEAS_RATES_MS: [u16; 4] = [100, 200, 500, 1000];
 
 /// Most key/value pairs in one CFG-VALSET (IM, 3.10.5).
 pub const MAX_PAIRS: usize = 64;
@@ -78,21 +79,57 @@ pub const KEY_SIGNAL_QZSS_L1CA_ENA: u32 = 0x1031_0012;
 /// CFG-SIGNAL-GLO_ENA, L.
 pub const KEY_SIGNAL_GLO_ENA: u32 = 0x1031_0025;
 
-/// Constellation and signal switches, as ArduPilot's `config_M10` plus the explicit GPS and Galileo
-/// defaults: GPS L1C/A, Galileo E1, BeiDou B1C (not B1I), QZSS L1C/A; GLONASS off. The data sheet's
-/// rate limits (tables 1 and 2) are given for this set.
-pub const SIGNAL_KEYS: [(u32, bool); 10] = [
-    (KEY_SIGNAL_GPS_ENA, true),
-    (KEY_SIGNAL_GPS_L1CA_ENA, true),
-    (KEY_SIGNAL_GAL_ENA, true),
-    (KEY_SIGNAL_GAL_E1_ENA, true),
-    (KEY_SIGNAL_BDS_ENA, true),
-    (KEY_SIGNAL_BDS_B1_ENA, false),
-    (KEY_SIGNAL_BDS_B1C_ENA, true),
-    (KEY_SIGNAL_QZSS_ENA, true),
-    (KEY_SIGNAL_QZSS_L1CA_ENA, true),
-    (KEY_SIGNAL_GLO_ENA, false),
-];
+/// CFG-SIGNAL-GLO_L1_ENA, L.
+pub const KEY_SIGNAL_GLO_L1_ENA: u32 = 0x1031_0018;
+
+/// GNSS constellation set. Every set writes all signal keys, so switching sets is deterministic.
+/// The rate limits are from the SAM-M10Q data sheet UBX-22013293-R05, tables 1 and 2 (default mode).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Constellations {
+    /// GPS L1C/A, Galileo E1, BeiDou B1C (not B1I), QZSS L1C/A; GLONASS off (ArduPilot
+    /// `config_M10`). At most 8 Hz.
+    #[default]
+    GpsGalBdsQzss,
+    /// GPS L1C/A and Galileo E1 only. At most 10 Hz.
+    GpsGal,
+    /// GPS L1C/A, Galileo E1 and GLONASS L1; BeiDou and QZSS off. At most 6 Hz.
+    GpsGalGlo,
+}
+
+impl Constellations {
+    /// Shortest measurement period the set allows, ms: 125 (8 Hz), 100 (10 Hz), 167 (6 Hz, rounded
+    /// up).
+    pub const fn min_meas_rate_ms(self) -> u16 {
+        match self {
+            Self::GpsGalBdsQzss => 125,
+            Self::GpsGal => 100,
+            Self::GpsGalGlo => 167,
+        }
+    }
+
+    /// Every signal key with its value for this set.
+    pub const fn signal_keys(self) -> [(u32, bool); 11] {
+        let (bds, qzss, glo) = match self {
+            Self::GpsGalBdsQzss => (true, true, false),
+            Self::GpsGal => (false, false, false),
+            Self::GpsGalGlo => (false, false, true),
+        };
+        [
+            (KEY_SIGNAL_GPS_ENA, true),
+            (KEY_SIGNAL_GPS_L1CA_ENA, true),
+            (KEY_SIGNAL_GAL_ENA, true),
+            (KEY_SIGNAL_GAL_E1_ENA, true),
+            (KEY_SIGNAL_BDS_ENA, bds),
+            (KEY_SIGNAL_BDS_B1_ENA, false),
+            (KEY_SIGNAL_BDS_B1C_ENA, bds),
+            (KEY_SIGNAL_QZSS_ENA, qzss),
+            (KEY_SIGNAL_QZSS_L1CA_ENA, qzss),
+            (KEY_SIGNAL_GLO_ENA, glo),
+            (KEY_SIGNAL_GLO_L1_ENA, glo),
+        ]
+    }
+}
 
 /// Largest CFG-VALSET payload [`ValSet`] holds: the 4-byte header and 64 pairs of a key and a value
 /// of up to 4 bytes (the 8-byte value size is not supported).
@@ -133,6 +170,8 @@ pub struct Config {
     pub dyn_model: u8,
     /// Static hold threshold, cm/s (CFG-MOT-GNSSSPEED_THRS).
     pub static_hold_thrs: u8,
+    /// Constellation set; its rate limit is not checked against `meas_rate_ms`.
+    pub constellations: Constellations,
 }
 
 impl Default for Config {
@@ -147,6 +186,7 @@ impl Default for Config {
             nav_rate: DEFAULT_NAV_RATE,
             dyn_model: DEFAULT_DYN_MODEL,
             static_hold_thrs: DEFAULT_STATIC_HOLD_THRS,
+            constellations: Constellations::GpsGalBdsQzss,
         }
     }
 }
@@ -175,7 +215,7 @@ impl Config {
         set.push(KEY_MSGOUT_NAV_PVT_UART1, 1)?;
         set.push(KEY_NAVSPG_DYNMODEL, u32::from(self.dyn_model))?;
         set.push(KEY_MOT_GNSSSPEED_THRS, u32::from(self.static_hold_thrs))?;
-        for (key, on) in SIGNAL_KEYS {
+        for (key, on) in self.constellations.signal_keys() {
             set.push_bool(key, on)?;
         }
         Some(set)
