@@ -38,5 +38,21 @@ and set after its last). It returns on the checksum byte of the NAV-PVT frame.
 `cargo test` (host): checksum and VALSET golden bytes, NAV-PVT golden decode, parser proptest with random chunking
 and garbage, a fake receiver at 9600 / 38400 / 115200, `NoReceiver`, `Rejected`, `NoAck`, `BaudSwitchFailed`, and a
 drop of `configure` at every poll. `cargo clippy --all-targets -- -D warnings`;
-`cargo build --target thumbv8m.main-none-eabihf`. Not run: anything on the board (no hil program yet, so no
-poll-timing figure and no real-receiver check of the defaults).
+`cargo build --target thumbv8m.main-none-eabihf`. Board checks: see below. Not measured yet: the poll
+time on the board.
+
+## On the board (hil)
+
+`hil/` is its own workspace (the only place that uses embassy-rp) with two programs for the MARV V2 board
+(RP2350, SAM-M10Q on UART1: TX GPIO24, RX GPIO25). It flashes through a debug probe (probe-rs, chip RP235x);
+`tools/run.sh` takes the shared lock `$XDG_RUNTIME_DIR/marv-v2-probe.lock`, so runs do not overlap.
+
+* `tools/run.sh alive`: boots and prints the system clock (tool chain, probe and board check).
+* `tools/run.sh sam_m10q_smoke`: `configure` with the default `Config` (bauds probed 115200, 9600, 38400), prints the
+  MON-VER strings, then reads NAV-PVT for 10 s. PASS when `configure` is Ok, 48 to 52 frames arrive (50 at 200 ms)
+  and there are no checksum errors. It also prints the oversize and ignored counts and the last frame's fixType,
+  numSV, hAcc and vAcc (information only: indoors there may be no fix). It never prints a position.
+
+The exit status is 0 on pass, 1 on fail. The `[PASS]`/`[FAIL]`/`[INFO]` lines are printed and the full log is kept
+under `hil/logs/` (not committed). `hil/src/bin/sam_m10q_smoke.rs` holds the `SetBaud` newtype over
+`embassy_rp::uart::BufferedUart`.
