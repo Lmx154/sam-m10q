@@ -1,0 +1,24 @@
+[package]
+name = "sam-m10q"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Driver for the u-blox SAM-M10Q GNSS receiver on a UART, UBX protocol only: sans-IO parser, async driver on embedded-io-async traits."
+readme = "README.md"
+keywords = ["embedded", "no-std", "driver", "gnss", "ubx"]
+categories = ["embedded", "no-std", "hardware-support"]
+rust-version = "1.99"
+exclude = ["tools/", "docs/", "proptest-regressions/", ".gitignore"]
+
+[features]
+defmt = ["dep:defmt", "embedded-io/defmt", "embedded-io-async/defmt"]
+
+[dependencies]
+embedded-io = "0.7"
+embedded-io-async = "0.7"
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+defmt = { version = "1.0.1", optional = true }
+
+[dev-dependencies]
+proptest = "1.12"
