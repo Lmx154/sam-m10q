@@ -1,14 +1,20 @@
 # sam-m10q
 
-Driver for the u-blox SAM-M10Q GNSS receiver on a UART. UBX protocol only: NMEA is switched off. `no_std`, no
-allocation, no panics outside tests, on the `embedded-io-async` 0.7 and `embedded-hal-async` 1.0 traits (optional
-`defmt`). Works with any executor or none.
+Driver for the u-blox SAM-M10Q GNSS receiver on a UART. UBX protocol only: NMEA is switched off. `no_std`, no allocation, no panics outside tests, on the `embedded-io-async` 0.7 and `embedded-hal-async` 1.0 traits (optional `defmt`). Works with any executor or none.
 
-* Sans-IO core: `ubx::Parser` (streaming, resynchronises on garbage, counts bad checksums, ignored and oversize
-  frames), `ubx::write_frame`, `config::ValSet`.
-* Async driver: `Receiver<UART>` with `configure` and `read_pvt`.
+```mermaid
+flowchart LR
+  uart["UART<br/>Read + Write + SetBaud"] --> rx["Receiver#lt;UART#gt;"]
+  rx -- "configure" --> valset["CFG-VALSET<br/>(RAM layer)"]
+  rx -- "read_pvt" --> parser["ubx::Parser<br/>(sans-IO)"]
+  parser --> pvt["NAV-PVT, ACK, MON-VER"]
+```
 
-Decoded: UBX-ACK-ACK, ACK-NAK, MON-VER (software and hardware strings) and NAV-PVT (all 92 bytes).
+- Sans-IO core: `ubx::Parser` (streaming, resynchronises on garbage, counts bad checksums, ignored and oversize frames), `ubx::write_frame`, `config::ValSet`.
+- Async driver: `Receiver<UART>` with `configure` and `read_pvt`.
+- Decoded: UBX-ACK-ACK, ACK-NAK, MON-VER (software and hardware strings) and NAV-PVT (all 92 bytes).
+
+## Quick start
 
 ```ignore
 let mut gnss = sam_m10q::Receiver::new(uart); // uart: Read + Write + sam_m10q::SetBaud
@@ -19,40 +25,37 @@ loop {
 }
 ```
 
-## configure
+The UART type implements `SetBaud` (`fn set_baud(&mut self, u32)`) because the driver cannot change the UART's baud rate itself.
 
-The driver cannot change the UART's baud rate, so the UART type implements `SetBaud` (`fn set_baud(&mut self, u32)`).
-Flow: for each candidate baud (9600, 38400, 115200): set it, poll MON-VER, wait up to 1000 ms for the reply; none
-at any rate gives `Error::NoReceiver`. If the rate found is not the target (115200), send a CFG-VALSET with
-CFG-UART1-BAUDRATE (its acknowledgement is not required), set the UART to the target, wait 100 ms and poll MON-VER
-again; the reply is the success check (`Error::BaudSwitchFailed` otherwise). Then one CFG-VALSET (layer RAM only,
-nothing saved) with the UBX-only protocol switches, 5 Hz rate, NAV-PVT output on UART1, dynamic model 8, static hold
-off and the signal set; ACK-ACK is required (`Error::Rejected` on NAK, `Error::NoAck` on silence). Last it waits
-500 ms because a signal change restarts the GNSS. Every default is a named constant in `config` with its source.
+## Docs
 
-`read_pvt` returns `Error::NotConfigured` until `configure` has completed (the flag is cleared before its first await
-and set after its last). It returns on the checksum byte of the NAV-PVT frame.
+| Page | In one line |
+|---|---|
+| [docs/device.md](docs/device.md) | UBX framing, CFG-VALSET, the `configure` flow, `read_pvt`, defaults and timing |
+| [hil/README.md](hil/README.md) | On-board test programs and how to run them |
 
-## Checks
+## Status
 
-`cargo test` (host): checksum and VALSET golden bytes, NAV-PVT golden decode, parser proptest with random chunking
-and garbage, a fake receiver at 9600 / 38400 / 115200, `NoReceiver`, `Rejected`, `NoAck`, `BaudSwitchFailed`, and a
-drop of `configure` at every poll. `cargo clippy --all-targets -- -D warnings`;
-`cargo build --target thumbv8m.main-none-eabihf`. Board checks: see below. Not measured yet: the poll
-time on the board.
+- Host tests: `cargo test` covers checksum and VALSET golden bytes, NAV-PVT golden decode, a parser property test with random chunking and garbage, a fake receiver at 9600 / 38400 / 115200, and the `NoReceiver`, `Rejected`, `NoAck` and `BaudSwitchFailed` errors. A drop of `configure` at every poll is tested too. `cargo clippy --all-targets -- -D warnings` and `cargo build --target thumbv8m.main-none-eabihf` are the other checks.
+- On the board (MARV V2, UART1): `sam_m10q_smoke` configures the receiver and reads NAV-PVT for 10 s; see [hil](hil/README.md).
+- Not established: the module's default baud as delivered, whether NMEA is on at start, the worst poll time of `Receiver` on the board.
 
-## On the board (hil)
+## Used by
 
-`hil/` is its own workspace (the only place that uses embassy-rp) with two programs for the MARV V2 board
-(RP2350, SAM-M10Q on UART1: TX GPIO24, RX GPIO25). It flashes through a debug probe (probe-rs, chip RP235x);
-`tools/run.sh` takes the shared lock `$XDG_RUNTIME_DIR/marv-v2-probe.lock`, so runs do not overlap.
+The MARV V2 flight-controller firmware ([MARV-FC](https://github.com/Lmx154/MARV-FC)) pins this crate.
 
-* `tools/run.sh alive`: boots and prints the system clock (tool chain, probe and board check).
-* `tools/run.sh sam_m10q_smoke`: `configure` with the default `Config` (bauds probed 115200, 9600, 38400), prints the
-  MON-VER strings, then reads NAV-PVT for 10 s. PASS when `configure` is Ok, 48 to 52 frames arrive (50 at 200 ms)
-  and there are no checksum errors. It also prints the oversize and ignored counts and the last frame's fixType,
-  numSV, hAcc and vAcc (information only: indoors there may be no fix). It never prints a position.
+## MARV project
 
-The exit status is 0 on pass, 1 on fail. The `[PASS]`/`[FAIL]`/`[INFO]` lines are printed and the full log is kept
-under `hil/logs/` (not committed). `hil/src/bin/sam_m10q_smoke.rs` holds the `SetBaud` newtype over
-`embassy_rp::uart::BufferedUart`.
+| Repository | Role |
+|---|---|
+| [MARV-FC](https://github.com/Lmx154/MARV-FC) | Flight-controller firmware for the MARV V2 board (RP2350B) |
+| [MARV-GCS](https://github.com/Lmx154/MARV-GCS) | Ground station (`marv-gcs`) and command line (`marv-cli`) |
+| [MARV-sim](https://github.com/Lmx154/MARV-sim) | Simulator that runs the firmware's flight code |
+| Sensors | [icm45686](https://github.com/Lmx154/icm45686-rs) · [lsm6dsk320x](https://github.com/Lmx154/lsm6dsk320x-rs) · [bmp581](https://github.com/Lmx154/bmp581-rs) · [bmm350](https://github.com/Lmx154/bmm350-rs) · **sam-m10q** · [adc-battery](https://github.com/Lmx154/adc-battery) |
+| Board I/O | [pio-sdmmc](https://github.com/Lmx154/pio-sdmmc-rs) · [qmi-psram](https://github.com/Lmx154/qmi-psram-rs) · [ws2812c](https://github.com/Lmx154/ws2812c-rs) · [usb-cdc](https://github.com/Lmx154/usb-cdc) · [pio-uart](https://github.com/Lmx154/pio-uart) |
+| Motors and links | [dshot](https://github.com/Lmx154/dshot-rs) · [esc-passthrough](https://github.com/Lmx154/esc-passthrough) · [rc-port](https://github.com/Lmx154/rc-port) · [crsf-codec](https://github.com/Lmx154/crsf-codec) · [mavlink-device](https://github.com/Lmx154/mavlink-device) · [marv-dialect](https://github.com/Lmx154/marv-dialect) |
+| Other drivers | [lc76g](https://github.com/Lmx154/lc76g-rs) (Quectel LC76G GNSS) |
+
+## License
+
+MIT, see `LICENSE`.
